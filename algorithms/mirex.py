@@ -55,7 +55,7 @@ def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, n
         print('Iteration %d' % it)
         prev_assignment = z
         # E-Step
-        # note: remove after testing
+        # note: remove for testing (takes too long)
         z = e_step(states, actions, prefs, len_trajs, W, rho_s)
         # M-Step
         # get new reward params for every intention
