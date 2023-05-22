@@ -6,40 +6,6 @@ import datetime
 from algorithms.highway_mlirl import multiple_intention_irl
 
 
-def discretize_actions(action):
-    new_action = np.zeros((action.shape[0], action.shape[1]))
-    val = np.zeros(4)
-    for s in range(action.shape[0]):
-        for t in range(action.shape[1]):
-            x, y = action[s][t].clip([-1, -1], [1, 1])
-            if 0.5 > x > -0.5 and y > 0:
-                new_action[s, t] = 0  # su
-                val[0] = 1
-            elif 0.5 > x > -0.5 and y <= 0:
-                new_action[s, t] = 1  # giu
-                val[1] = 1
-            elif 0.5 > y > -0.5 and x >= 0:
-                new_action[s, t] = 2  # DESTRA
-                val[2] = 1
-            elif 0.5 > y > -0.5 and x <= 0:
-                new_action[s, t] = 3  # SINISTRA
-                val[3] = 1
-    return new_action
-
-
-def create_rewards(state_space, goal, grid_size=9):
-    rewards = np.zeros((state_space, 3))
-    for s in range(state_space):
-        x, y = np.floor(s / grid_size), s % grid_size
-        if int(x) == goal[0] and int(y) == goal[1]:  # goal state
-            rewards[s][2] = 1
-        elif 1 <= x <= grid_size - 2 and 1 <= y <= grid_size - 2:  # slow_region
-            rewards[s][1] = -1
-        else:
-            rewards[s][0] = -1
-    return rewards
-
-
 def get_states_actions_intents(args):
     data_df = pd.read_csv(args.load_path + args.trajs_file)
 
@@ -119,7 +85,7 @@ def run(id, seed, args):
     all_states, len_trajs, all_actions, gt_intents = get_states_actions_intents(args)
     # discretize continuous state space into 2 bins (to avoid needing a DQN for their Bellman Update)
     discretize_speed(all_states)
-    # ? remember why we did this
+    # ? remember why we did this, avoided zeroed out values somewhere
     all_states[all_states == 0] = -1
     # to be able to map each state to a trans prob, zeta and grad
     states_idx_dict, unique_states, state_space = assign_state_indices(all_states)
