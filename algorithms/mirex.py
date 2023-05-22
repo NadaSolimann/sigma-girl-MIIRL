@@ -63,32 +63,7 @@ def maximum_likelihood_irl(states, actions, len_trajs, prefs, K, W, z, n_iterati
         theta_l = W2_t[l].detach()
         W[l] = theta_l.numpy()
 
-    np.set_printoptions(linewidth=120, formatter=dict(float=lambda x: f"{x:.3f}"))
-    print(f"-------------OLD WEIGHTS-------------\n{W_check}")
-    print(f"-------------NEW WEIGHTS-------------\n{W}")
-    print(f"Updated?: {not np.array_equal(W, W_check)}")
-
     return W
-
-
-def print_accuracy(num_trajs, K, z, gt_intents, rho_s, theta):
-    intent_map = {'Safe': 0, 'Student': 1, 'Demolition': 2, 'Nasty': 3}
-    y_true = np.array([intent_map[intent] for intent in gt_intents])
-    intent_pairs_shape = (K, K)
-
-    assigned_intents = np.full((num_trajs), -1)
-    for i in range(num_trajs // 2):
-        for j in range(num_trajs // 2, num_trajs):
-            (l, m) = np.unravel_index(np.argmax(z[i,j]), intent_pairs_shape)
-            assigned_intents[i] = l
-            assigned_intents[j] = m
-
-    print(f"-------------ASSIGNMENTS-------------")
-    for i in range(K):
-        cluster_indices = np.where(y_true == i)[0]
-        print(f"Intention {i}: {assigned_intents[cluster_indices]}")
-    print(f"-------------PRIORS-------------\n{rho_s}")
-    print(f"-------------THETAS-------------\n{theta}")
 
 
 def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, gt_intents, n_iterations=20, tolerance=1.e-5):
@@ -112,12 +87,10 @@ def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, g
     max_iteration = 20
     # perform EM until parameters converge
     while it < max_iteration and np.max(np.abs(z - prev_assignment)) > tolerance:
-        print('Iteration {0}, convergence {1}'.format(it, np.max(np.abs(z - prev_assignment))))
+        print(f"Iteration {it}")
         prev_assignment = z
         # E-Step
-        # ? is zeta 4-way symmetric?
         z = e_step(states, actions, prefs, len_trajs, W, rho_s)
-        print_accuracy(num_trajs, K, z, gt_intents, rho_s, W)
         # M-Step
         # get new reward params for every intention
         W = maximum_likelihood_irl(states=states,
@@ -131,8 +104,6 @@ def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, g
         # update the joint priors
         for l in range(K):
             for m in range(K):
-                # ! PROBLEM: should be fixed now
-                # ! but not all N^2 i,j pairs present in z, only ones in prefs
                 rho_s[l, m] = np.sum(z[:, :, l, m]) / len(states)**2
         it += 1
 
@@ -245,5 +216,4 @@ def e_step(states, actions, prefs, len_trajs, W_t, rho_s):
             zeta[i,j,:,:] = r[count]
             count += 1
 
-    # ! some ones on first iter ??
     return zeta
