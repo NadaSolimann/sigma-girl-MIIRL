@@ -3,7 +3,6 @@ import torch
 from torch import nn
 import torch.optim as optim
 from tqdm import tqdm
-import pdb
 
 import os
 # import multiprocessing
@@ -11,8 +10,6 @@ from joblib import Parallel, delayed
 import contextlib
 import joblib
 from tqdm import tqdm
-import tensorboard
-from torch.utils.tensorboard import SummaryWriter
 
 # FROM: https://stackoverflow.com/questions/24983493/tracking-progress-of-joblib-parallel-execution
 # Progress bar for parallelized processes
@@ -35,7 +32,7 @@ def tqdm_joblib(tqdm_object):
 ##Implementation of our algorithm
 
 
-def maximum_likelihood_irl(states, actions, len_trajs, prefs, K, W, rho_s, z, n_iterations=10, gradient_iterations=100, alpha=0.001):
+def maximum_likelihood_irl(states, actions, len_trajs, prefs, K, W, z, n_iterations=10, gradient_iterations=100, alpha=0.001):
     # Copy of numpy ndarray
     W2 = W.copy()
     # Get list of tensors similar to before (torch)
@@ -48,7 +45,7 @@ def maximum_likelihood_irl(states, actions, len_trajs, prefs, K, W, rho_s, z, n_
     # update reward weights for every intention l
     for l in range(K):
         # theta_l would be weights for intention l, a.k.a. W2_t[l] because we want the tensor that actually represents those weights
-        for n in range(n_iterations):
+        for i in range(n_iterations):
             optimizer.zero_grad()
             # likelihood = 0.0
             likelihood = torch.zeros(1)
@@ -56,64 +53,16 @@ def maximum_likelihood_irl(states, actions, len_trajs, prefs, K, W, rho_s, z, n_
                 for m in range(K):
                     # Using torch function (.log) and some of the inputs are not tensors (W2_t[l] and W2_t[m])
                     # Altered the get_pref_likelihood function to handle tensors or ndarrays...
-                    W_l = torch.clone(W2_t[l]).detach()
-                    pref_likelihood = torch.div(get_pref_likelihood(states, actions, len_trajs, i, j, W_l, W2_t[m], W), rho_s[l,m])
-                    likelihood = torch.add(likelihood, torch.mul(torch.log(pref_likelihood), z[i,j,l,m]))
+                    likelihood += torch.log(get_pref_likelihood(states, actions, len_trajs, i, j, W2_t[l], W2_t[m], W)) * z[i,j,l,m]
             # 'likelihood' tensor should contain the history of "how it got here", 
             #  so we can backprop on it since it can calculate its gradient
-            likelihood = torch.mul(likelihood, -1)
+            likelihood *= -1
             likelihood.backward()
             optimizer.step()
         # Remaking the original ndarray version of the weights from the backpropped tensors
         theta_l = W2_t[l].detach()
         W[l] = theta_l.numpy()
 
-    return W
-
-
-def print_accuracy(num_trajs, iter, K, z, gt_intents, rho_s, theta):
-    intent_map = {'Safe': 0, 'Student': 1, 'Demolition': 2, 'Nasty': 3}
-    y_true = np.array([intent_map[intent] for intent in gt_intents])
-    intent_pairs_shape = (K, K)
-
-    assigned_intents = np.full((num_trajs), -1)
-    for i in range(num_trajs // 2):
-        for j in range(num_trajs // 2, num_trajs):
-            (l, m) = np.unravel_index(np.argmax(z[i,j]), intent_pairs_shape)
-            assigned_intents[i] = l
-            assigned_intents[j] = m
-
-    print(f"-------------ASSIGNMENTS-------------")
-    for i in range(K):
-        cluster_indices = np.where(y_true == i)[0]
-        print(f"Intention {i}: {assigned_intents[cluster_indices]}")
-    print(f"-------------PRIORS-------------\n{rho_s}")
-    print(f"-------------THETAS-------------\n{theta}")
-
-
-def print_accuracy_toy(tb_logger, iter, num_trajs, z, rho_s, theta):
-    print(f"-------------ASSIGNMENTS-------------")
-    for i in range(num_trajs):
-        l = np.unravel_index(np.argmax(z[i,:,:,:]), z[i,:,:,:].shape)[1]
-        print(f"Traj {i} ==> Intention {l}")
-
-    print(f"-------------PRIORS-------------\n{rho_s}")
-    print(f"-------------THETAS-------------\n{theta}")
-
-    tb_logger.add_scalar("Theta_0", theta[0], iter)
-    tb_logger.add_scalar("Theta_1", theta[1], iter)
-
-
-def get_toy_thetas(K, num_features):
-    W = np.zeros((K, num_features + 1))
-    # W[0] = [-0.5, 2]
-    # W[1] = [1, -3]
-
-    # W[0] = [1, 0]
-    # W[1] = [0, 1]
-
-    W[0] = [1]
-    W[1] = [0]
     return W
 
 
@@ -124,8 +73,7 @@ def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, n
 
     # initialize reward weights for the features for each cluster
     # 5 features: speed, num_collisions (+neg), num_offroad_visits (+neg)
-    # W = np.random.random((K, num_features + 1)) # +1 for the actions
-    W = np.random.random((K, num_features))
+    W = np.random.random((K, num_features + 1)) # +1 for the actions
 
     num_trajs = len(states)
     # shape = (num_trajs, num_trajs, k, k) bc prob of assigning traj i, j to intentions l, m
@@ -133,7 +81,6 @@ def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, n
     z /= np.sum(z, axis=(-1, -2), keepdims=True) # normalize the random nums to get a prob distrib
     # Initialize previous assignment for convergence checking
     prev_assignment = np.ones(z.shape)
-    tb_logger = SummaryWriter("MIREX Thetas")
 
     # EM algorithm
     it = 0    # curr_iter
@@ -144,8 +91,6 @@ def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, n
         prev_assignment = z
         # E-Step
         z = e_step(states, actions, prefs, len_trajs, W, rho_s)
-        # print_accuracy(num_trajs, K, z, gt_intents, rho_s, W)
-        print_accuracy_toy(tb_logger, it, num_trajs, z, rho_s, W)
         # M-Step
         # get new reward params for every intention
         W = maximum_likelihood_irl(states=states,
@@ -154,30 +99,21 @@ def multiple_intention_irl(states, actions, prefs, len_trajs, num_features, K, n
                                     prefs=prefs,
                                     K=K,
                                     W=W,
-                                    rho_s=rho_s,
                                     z=z,
                                     n_iterations=n_iterations)
         # update the joint priors
         for l in range(K):
             for m in range(K):
-                rho_s[l, m] = np.sum(z[:, :, l, m]) / len(states) ** 2
+                rho_s[l, m] = np.sum(z[:, :, l, m]) / len(states)**2
         it += 1
 
     return W
 
 
-# TODO: enable option to have no actions
 def calculate_feature_vector(states, actions, i, W, len_trajs):
     feature_psi = np.zeros(W.shape[1])
     for t in range(len_trajs[i]):
         feature_psi += np.append(states[i][t], actions[i][t])
-    return feature_psi
-
-
-def calculate_feature_vector_v2(states, actions, i, W, len_trajs):
-    feature_psi = np.zeros(W.shape[1])
-    for t in range(len_trajs[i]):
-        feature_psi += states[i][t]
     return feature_psi
 
 
@@ -187,9 +123,9 @@ def get_pref_likelihood(states, actions, len_trajs, i, j, theta_yi, theta_yj, W)
     # W: ndarray
     # theta_yi: ndarray OR torch.Tensor
     # theta_yj: ndarray OR torch.Tensor
-    # TODO: change back from v2 when done
-    traj_i_features = calculate_feature_vector_v2(states, actions, i, W, len_trajs)
-    traj_j_features = calculate_feature_vector_v2(states, actions, j, W, len_trajs)
+
+    traj_i_features = calculate_feature_vector(states, actions, i, W, len_trajs)
+    traj_j_features = calculate_feature_vector(states, actions, j, W, len_trajs)
 
     if isinstance(theta_yi, torch.Tensor) or isinstance(theta_yj, torch.Tensor):
         dot_i = torch.dot(theta_yi, torch.tensor(traj_i_features))
@@ -214,81 +150,33 @@ def get_pref_likelihood(states, actions, len_trajs, i, j, theta_yi, theta_yj, W)
 
     return numerator / denominator
 
-# not in use (old method)
-def assign_y_value(i, y_i, i_prime, l, j_prime, m):
-    if i == i_prime:
-        y_i = l
-    elif i == j_prime:
-        y_i = m
-    return y_i
 
-# not in use (old method)
-def get_final_assignments(i, y_i, j, y_j, i_prime, l, j_prime, m):
-    y_i = assign_y_value(i, y_i, i_prime, l, j_prime, m)
-    y_j = assign_y_value(j, y_j, i_prime, l, j_prime, m)
-    return y_i, y_j
-
-
-# TODO: (later) can probably make this better
-def is_feasible_assignments(i, y_i, j, y_j, i_prime, l, j_prime, m):
-    # check feasible y_i
-    if (i_prime == i and y_i != l): return False
-    if (i_prime == j and y_i != m): return False
-    # check feasible y_j
-    if (j_prime == i and y_j != l): return False
-    if (j_prime == j and y_j != m): return False
-    
-    return True
-
-
-def compute_likelihood(states, actions, i, j, l, m, prefs, len_trajs, K, W, rho_s):
+def compute_likelihood(states, actions, i, j, l, m, prefs, len_trajs, K, W):
     # Compute the joint probability of the data for the current values of l and m
     joint_prob = 1.0
     for (i_prime, j_prime) in prefs:
-        y_sum = 0.0
         for y_i in range(K):
             for y_j in range(K):
-                if (is_feasible_assignments(i, y_i, j, y_j, i_prime, l, j_prime, m)):
-                    y_sum += get_pref_likelihood(states, actions, len_trajs, i_prime,
+                y_sum = 0.0
+                if (i == i_prime): y_i = l
+                if (j == j_prime): y_j = m
+                y_sum += get_pref_likelihood(states, actions, len_trajs, i_prime,
                                              j_prime, W[y_i], W[y_j], W)
-                # probability is zero if not feasible
-                x = 5
-        joint_prob *= y_sum * rho_s[y_i, y_j]     # i > j in every (i, j) in prefs
+
+        joint_prob *= y_sum     # i > j in every (i, j) in prefs
 
     return joint_prob
-
 
 # Pulled part of the E-Step computation to another function
 # just to use some multiprocessing.
 def compute_pref_e(states, actions, i, j, prefs, len_trajs, K, W_t, rho_s):
-    denominator = sum(compute_likelihood(states, actions, i, j, k, h, prefs, len_trajs, K, W_t, rho_s) \
+    denominator = sum(compute_likelihood(states, actions, i, j, k, h, prefs, len_trajs, K, W_t) \
                                 * rho_s[k,h] for k in range(K) for h in range(K))
     zeta = np.zeros((K,K))
     for l in range(K):
         for m in range(K):
             # compute z_{i,j}^{l,m}
-            numerator = rho_s[l,m] * compute_likelihood(states, actions, i, j, l, m, prefs, len_trajs, K, W_t, rho_s)
-            zeta[l,m] = numerator / denominator
-    return zeta
-
-
-# TODO: not finished yet, some issues
-def compute_pref_e_memoization(states, actions, i, j, prefs, len_trajs, K, W_t, rho_s):
-    denominator = sum(compute_likelihood(states, actions, i, j, k, h, prefs, len_trajs, K, W_t, rho_s) \
-                                * rho_s[k,h] for k in range(K) for h in range(K))
-    zeta = np.full((K,K), -1)
-    for l in range(K):
-        for m in range(K):
-            if (zeta[i,j,l,m] != -1 or zeta[j,i,m,l] != -1): # ! probably second part not needed
-                break
-
-            if (i == j and l != m):
-                zeta[i,j,l,m] = 0
-                break
-
-            # TODO: figure out a way to get rid of extra computation , need i,j,l,m in zeta
-            # compute z_{i,j}^{l,m}
-            numerator = rho_s[l,m] * compute_likelihood(states, actions, i, j, l, m, prefs, len_trajs, K, W_t, rho_s)
+            numerator = rho_s[l,m] * compute_likelihood(states, actions, i, j, l, m, prefs, len_trajs, K, W_t)
             zeta[l,m] = numerator / denominator
     return zeta
 
@@ -299,7 +187,7 @@ def e_step(states, actions, prefs, len_trajs, W_t, rho_s):
     K = rho_s.shape[0]
 
     # shape = (num_trajs, num_trajs, k, k) bc prob of assigning traj i, j to intentions l, m
-    zeta = np.full((N, N, K, K), -1.0)
+    zeta = np.ones((N, N, K, K))
 
     # Compute the values of z_{i,j}^{l,m} for all trajs i, j and intentions l, m
 
@@ -315,9 +203,7 @@ def e_step(states, actions, prefs, len_trajs, W_t, rho_s):
     with tqdm_joblib(tqdm(desc="Running E-step.", total=len(states)**2)) as progress_bar:
         # Can change the second number depending on how many cpu cores you have access to.
         n_procs = max(1, os.cpu_count()-16)
-        for s,a,i,j,p,lt,k,wt,rs in inputs:
-            compute_pref_e(s,a,i,j,p,lt,k,wt,rs)
-        res = Parallel(n_jobs=n_procs)(
+        r = Parallel(n_jobs=n_procs)(
             delayed(compute_pref_e)(s,a,i,j,p,lt,k,wt,rs) for s,a,i,j,p,lt,k,wt,rs in inputs
         )
     print("Finalizing E-step.")
@@ -328,8 +214,7 @@ def e_step(states, actions, prefs, len_trajs, W_t, rho_s):
             #   so we can just place them using the same order that we made the inputs
             # https://stackoverflow.com/questions/56659294/does-joblib-parallel-keep-the-original-order-of-data-passed
             # https://joblib.readthedocs.io/en/latest/generated/joblib.Parallel.html
-            zeta[i,j,:,:] = res[count]
+            zeta[i,j,:,:] = r[count]
             count += 1
 
-    # np.unravel_index(np.argmax(zeta[i,:,:,:]),zeta[i,:,:,:].shape)
     return zeta

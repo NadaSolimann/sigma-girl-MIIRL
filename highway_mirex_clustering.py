@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 from joblib import Parallel, delayed
 import datetime
-from algorithms import mirex
+from algorithms import highway_mirex
 import pandas as pd
 import random
 
@@ -87,9 +87,8 @@ def run(id, seed, args):
 
     preferences = get_traj_preferences(args)
     d_start = datetime.datetime.now()
-    res = mirex.multiple_intention_irl(all_states, all_actions, preferences,
-                                       len_trajs, args.num_features, K,
-                                       gt_intents, n_iterations=n_iterations)
+    res = highway_mirex.multiple_intention_irl(all_states, all_actions, preferences,
+                                       len_trajs, args.num_features, K, n_iterations=n_iterations)
     t_s = (datetime.datetime.now() - d_start).total_seconds()
     return res, t_s
 
